@@ -55,7 +55,7 @@ public final class AppRTCUtils {
   /** Information about the current build, taken from system properties. */
   public static void logDeviceInfo(String tag) {
     Log.d(tag, "Android SDK: " + Build.VERSION.SDK_INT + ", "
-        + "Release: " + Build.VERSION.RELEASE_OR_CODENAME + ", "
+        + "Release: " + Build.VERSION.RELEASE + ", "
         + "Brand: " + Build.BRAND + ", "
         + "Device: " + Build.DEVICE + ", "
         + "Id: " + Build.ID + ", "

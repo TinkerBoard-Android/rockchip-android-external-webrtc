@@ -43,7 +43,7 @@ public final class BuildInfo {
   }
 
   public static String getBuildRelease() {
-    return Build.VERSION.RELEASE_OR_CODENAME;
+    return Build.VERSION.RELEASE;
   }
 
   public static String getSdkVersion() {
