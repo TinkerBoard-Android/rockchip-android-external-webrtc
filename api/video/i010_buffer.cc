@@ -66,12 +66,16 @@ rtc::scoped_refptr<I010Buffer> I010Buffer::Copy(
   const int width = source.width();
   const int height = source.height();
   rtc::scoped_refptr<I010Buffer> buffer = Create(width, height);
+#if 0
   RTC_CHECK_EQ(
       0, libyuv::I010Copy(
              source.DataY(), source.StrideY(), source.DataU(), source.StrideU(),
              source.DataV(), source.StrideV(), buffer->MutableDataY(),
              buffer->StrideY(), buffer->MutableDataU(), buffer->StrideU(),
              buffer->MutableDataV(), buffer->StrideV(), width, height));
+#else
+  abort();
+#endif
   return buffer;
 }
 
@@ -81,12 +85,16 @@ rtc::scoped_refptr<I010Buffer> I010Buffer::Copy(
   const int width = source.width();
   const int height = source.height();
   rtc::scoped_refptr<I010Buffer> buffer = Create(width, height);
+#if 0
   RTC_CHECK_EQ(
       0, libyuv::I420ToI010(
              source.DataY(), source.StrideY(), source.DataU(), source.StrideU(),
              source.DataV(), source.StrideV(), buffer->MutableDataY(),
              buffer->StrideY(), buffer->MutableDataU(), buffer->StrideU(),
              buffer->MutableDataV(), buffer->StrideV(), width, height));
+#else
+  abort();
+#endif
   return buffer;
 }
 
@@ -150,11 +158,15 @@ rtc::scoped_refptr<I010Buffer> I010Buffer::Rotate(
 rtc::scoped_refptr<I420BufferInterface> I010Buffer::ToI420() {
   rtc::scoped_refptr<I420Buffer> i420_buffer =
       I420Buffer::Create(width(), height());
+#if 0
   libyuv::I010ToI420(DataY(), StrideY(), DataU(), StrideU(), DataV(), StrideV(),
                      i420_buffer->MutableDataY(), i420_buffer->StrideY(),
                      i420_buffer->MutableDataU(), i420_buffer->StrideU(),
                      i420_buffer->MutableDataV(), i420_buffer->StrideV(),
                      width(), height());
+#else
+  abort();
+#endif
   return i420_buffer;
 }
 
