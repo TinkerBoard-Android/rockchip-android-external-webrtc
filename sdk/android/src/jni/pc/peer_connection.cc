@@ -264,11 +264,6 @@ void JavaToNativeRTCConfiguration(
   rtc_config->sdp_semantics = JavaToNativeSdpSemantics(jni, j_sdp_semantics);
   rtc_config->active_reset_srtp_params =
       Java_RTCConfiguration_getActiveResetSrtpParams(jni, j_rtc_config);
-  rtc_config->use_media_transport =
-      Java_RTCConfiguration_getUseMediaTransport(jni, j_rtc_config);
-  rtc_config->use_media_transport_for_data_channels =
-      Java_RTCConfiguration_getUseMediaTransportForDataChannels(jni,
-                                                                j_rtc_config);
   rtc_config->crypto_options =
       JavaToNativeOptionalCryptoOptions(jni, j_crypto_options);
 
@@ -763,9 +758,9 @@ static jboolean JNI_PeerConnection_SetBitrate(
     const JavaParamRef<jobject>& j_min,
     const JavaParamRef<jobject>& j_current,
     const JavaParamRef<jobject>& j_max) {
-  PeerConnectionInterface::BitrateParameters params;
+  BitrateSettings params;
   params.min_bitrate_bps = JavaToNativeOptionalInt(jni, j_min);
-  params.current_bitrate_bps = JavaToNativeOptionalInt(jni, j_current);
+  params.start_bitrate_bps = JavaToNativeOptionalInt(jni, j_current);
   params.max_bitrate_bps = JavaToNativeOptionalInt(jni, j_max);
   return ExtractNativePC(jni, j_pc)->SetBitrate(params).ok();
 }

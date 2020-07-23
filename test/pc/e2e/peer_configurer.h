@@ -23,7 +23,6 @@
 #include "api/task_queue/task_queue_factory.h"
 #include "api/test/create_peer_connection_quality_test_frame_generator.h"
 #include "api/test/peerconnection_quality_test_fixture.h"
-#include "api/transport/media/media_transport_interface.h"
 #include "api/transport/network_control.h"
 #include "api/video_codecs/video_decoder_factory.h"
 #include "api/video_codecs/video_encoder_factory.h"
@@ -39,6 +38,10 @@ namespace webrtc_pc_e2e {
 class PeerConfigurerImpl final
     : public PeerConnectionE2EQualityTestFixture::PeerConfigurer {
  public:
+  using VideoSource =
+      absl::variant<std::unique_ptr<test::FrameGeneratorInterface>,
+                    PeerConnectionE2EQualityTestFixture::CapturingDeviceIndex>;
+
   PeerConfigurerImpl(rtc::Thread* network_thread,
                      rtc::NetworkManager* network_manager)
       : components_(std::make_unique<InjectableComponents>(network_thread,
@@ -82,12 +85,6 @@ class PeerConfigurerImpl final
         std::move(network_controller_factory);
     return this;
   }
-  PeerConfigurer* SetMediaTransportFactory(
-      std::unique_ptr<MediaTransportFactory> media_transport_factory) override {
-    components_->pcf_dependencies->media_transport_factory =
-        std::move(media_transport_factory);
-    return this;
-  }
   PeerConfigurer* SetVideoEncoderFactory(
       std::unique_ptr<VideoEncoderFactory> video_encoder_factory) override {
     components_->pcf_dependencies->video_encoder_factory =
@@ -123,7 +120,7 @@ class PeerConfigurerImpl final
 
   PeerConfigurer* AddVideoConfig(
       PeerConnectionE2EQualityTestFixture::VideoConfig config) override {
-    video_generators_.push_back(
+    video_sources_.push_back(
         CreateSquareFrameGenerator(config, /*type=*/absl::nullopt));
     params_->video_configs.push_back(std::move(config));
     return this;
@@ -132,7 +129,15 @@ class PeerConfigurerImpl final
       PeerConnectionE2EQualityTestFixture::VideoConfig config,
       std::unique_ptr<test::FrameGeneratorInterface> generator) override {
     params_->video_configs.push_back(std::move(config));
-    video_generators_.push_back(std::move(generator));
+    video_sources_.push_back(std::move(generator));
+    return this;
+  }
+  PeerConfigurer* AddVideoConfig(
+      PeerConnectionE2EQualityTestFixture::VideoConfig config,
+      PeerConnectionE2EQualityTestFixture::CapturingDeviceIndex index)
+      override {
+    params_->video_configs.push_back(std::move(config));
+    video_sources_.push_back(index);
     return this;
   }
   PeerConfigurer* SetAudioConfig(
@@ -158,9 +163,9 @@ class PeerConfigurerImpl final
     params_->rtc_configuration = std::move(configuration);
     return this;
   }
-  PeerConfigurer* SetBitrateParameters(
-      PeerConnectionInterface::BitrateParameters bitrate_params) override {
-    params_->bitrate_params = bitrate_params;
+  PeerConfigurer* SetBitrateSettings(
+      BitrateSettings bitrate_settings) override {
+    params_->bitrate_settings = bitrate_settings;
     return this;
   }
 
@@ -173,10 +178,7 @@ class PeerConfigurerImpl final
 
   InjectableComponents* components() { return components_.get(); }
   Params* params() { return params_.get(); }
-  std::vector<std::unique_ptr<test::FrameGeneratorInterface>>*
-  video_generators() {
-    return &video_generators_;
-  }
+  std::vector<VideoSource>* video_sources() { return &video_sources_; }
 
   // Returns InjectableComponents and transfer ownership to the caller.
   // Can be called once.
@@ -194,19 +196,18 @@ class PeerConfigurerImpl final
     params_ = nullptr;
     return params;
   }
-  // Returns frame generators and transfer ownership to the caller.
-  // Can be called once.
-  std::vector<std::unique_ptr<test::FrameGeneratorInterface>>
-  ReleaseVideoGenerators() {
-    auto video_generators = std::move(video_generators_);
-    video_generators_.clear();
-    return video_generators;
+  // Returns video sources and transfer frame generators ownership to the
+  // caller. Can be called once.
+  std::vector<VideoSource> ReleaseVideoSources() {
+    auto video_sources = std::move(video_sources_);
+    video_sources_.clear();
+    return video_sources;
   }
 
  private:
   std::unique_ptr<InjectableComponents> components_;
   std::unique_ptr<Params> params_;
-  std::vector<std::unique_ptr<test::FrameGeneratorInterface>> video_generators_;
+  std::vector<VideoSource> video_sources_;
 };
 
 // Set missing params to default values if it is required:
