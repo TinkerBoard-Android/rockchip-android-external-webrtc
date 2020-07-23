@@ -434,58 +434,6 @@ VideoQualityTest::VideoQualityTest(
       std::move(injection_components_->network_controller_factory);
 }
 
-VideoQualityTest::Params::Params()
-    : call({false, false, BitrateConstraints(), 0}),
-      video{{false,
-             640,
-             480,
-             30,
-             50,
-             800,
-             800,
-             false,
-             "VP8",
-             1,
-             -1,
-             0,
-             false,
-             false,
-             false,
-             "",
-             0,
-             {},
-             0.0},
-            {false,
-             640,
-             480,
-             30,
-             50,
-             800,
-             800,
-             false,
-             "VP8",
-             1,
-             -1,
-             0,
-             false,
-             false,
-             false,
-             "",
-             0,
-             {},
-             0.0}},
-      audio({false, false, false, false}),
-      screenshare{{false, false, 10, 0}, {false, false, 10, 0}},
-      analyzer({"", 0.0, 0.0, 0, "", ""}),
-      config(absl::nullopt),
-      ss{{std::vector<VideoStream>(), 0, 0, -1, InterLayerPredMode::kOn,
-          std::vector<SpatialLayer>()},
-         {std::vector<VideoStream>(), 0, 0, -1, InterLayerPredMode::kOn,
-          std::vector<SpatialLayer>()}},
-      logging({"", "", ""}) {}
-
-VideoQualityTest::Params::~Params() = default;
-
 VideoQualityTest::InjectionComponents::InjectionComponents() = default;
 
 VideoQualityTest::InjectionComponents::~InjectionComponents() = default;
@@ -815,11 +763,6 @@ void VideoQualityTest::SetupVideo(Transport* send_transport,
     }
 
     if (params_.call.generic_descriptor) {
-      // The generic descriptor is currently behind a field trial, so it needs
-      // to be set for this flag to have any effect.
-      // TODO(philipel): Remove this check when the experiment is removed.
-      RTC_CHECK(field_trial::IsEnabled("WebRTC-GenericDescriptor"));
-
       video_send_configs_[video_idx].rtp.extensions.emplace_back(
           RtpExtension::kGenericFrameDescriptorUri00,
           kGenericFrameDescriptorExtensionId00);

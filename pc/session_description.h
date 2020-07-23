@@ -147,13 +147,6 @@ class MediaContentDescription {
     rtp_header_extensions_.push_back(ext);
     rtp_header_extensions_set_ = true;
   }
-  virtual void AddRtpHeaderExtension(const cricket::RtpHeaderExtension& ext) {
-    webrtc::RtpExtension webrtc_extension;
-    webrtc_extension.uri = ext.uri;
-    webrtc_extension.id = ext.id;
-    rtp_header_extensions_.push_back(webrtc_extension);
-    rtp_header_extensions_set_ = true;
-  }
   virtual void ClearRtpHeaderExtensions() {
     rtp_header_extensions_.clear();
     rtp_header_extensions_set_ = true;
@@ -253,13 +246,6 @@ class MediaContentDescription {
     receive_rids_ = rids;
   }
 
-  virtual const absl::optional<std::string>& alt_protocol() const {
-    return alt_protocol_;
-  }
-  virtual void set_alt_protocol(const absl::optional<std::string>& protocol) {
-    alt_protocol_ = protocol;
-  }
-
  protected:
   bool rtcp_mux_ = false;
   bool rtcp_reduced_size_ = false;
@@ -281,8 +267,6 @@ class MediaContentDescription {
 
   SimulcastDescription simulcast_;
   std::vector<RidDescription> receive_rids_;
-
-  absl::optional<std::string> alt_protocol_;
 
  private:
   // Copy function that returns a raw pointer. Caller will assert ownership.

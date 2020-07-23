@@ -17,7 +17,6 @@
 #include "api/video/encoded_image.h"
 #include "api/video/video_timing.h"
 #include "rtc_base/checks.h"
-#include "rtc_base/critical_section.h"
 
 namespace webrtc {
 namespace video_coding {
@@ -127,10 +126,6 @@ bool RtpFrameObject::delayed_by_retransmission() const {
 
 const RTPVideoHeader& RtpFrameObject::GetRtpVideoHeader() const {
   return rtp_video_header_;
-}
-
-const FrameMarking& RtpFrameObject::GetFrameMarking() const {
-  return rtp_video_header_.frame_marking;
 }
 
 }  // namespace video_coding

@@ -16,12 +16,19 @@ enum PreservedErrno {
   SCTP_EINPROGRESS = EINPROGRESS,
   SCTP_EWOULDBLOCK = EWOULDBLOCK
 };
+
+// Successful return value from usrsctp callbacks. Is not actually used by
+// usrsctp, but all example programs for usrsctp use 1 as their return value.
+constexpr int kSctpSuccessReturn = 1;
+
 }  // namespace
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <usrsctp.h>
 
 #include <memory>
+#include <unordered_map>
 
 #include "absl/algorithm/container.h"
 #include "absl/base/attributes.h"
@@ -34,14 +41,14 @@ enum PreservedErrno {
 #include "p2p/base/dtls_transport_internal.h"  // For PF_NORMAL
 #include "rtc_base/arraysize.h"
 #include "rtc_base/copy_on_write_buffer.h"
-#include "rtc_base/critical_section.h"
 #include "rtc_base/helpers.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_conversions.h"
 #include "rtc_base/string_utils.h"
+#include "rtc_base/synchronization/mutex.h"
+#include "rtc_base/thread_annotations.h"
 #include "rtc_base/thread_checker.h"
 #include "rtc_base/trace_event.h"
-#include "usrsctplib/usrsctp.h"
 
 namespace {
 
@@ -51,7 +58,7 @@ static constexpr size_t kSctpMtu = 1200;
 
 // Set the initial value of the static SCTP Data Engines reference count.
 ABSL_CONST_INIT int g_usrsctp_usage_count = 0;
-ABSL_CONST_INIT rtc::GlobalLock g_usrsctp_lock_;
+ABSL_CONST_INIT webrtc::GlobalMutex g_usrsctp_lock_(absl::kConstInit);
 
 // DataMessageType is used for the SCTP "Payload Protocol Identifier", as
 // defined in http://tools.ietf.org/html/rfc4960#section-14.4
@@ -60,7 +67,7 @@ ABSL_CONST_INIT rtc::GlobalLock g_usrsctp_lock_;
 // http://www.iana.org/assignments/sctp-parameters/sctp-parameters.xml
 // The value is not used by SCTP itself. It indicates the protocol running
 // on top of SCTP.
-enum PayloadProtocolIdentifier {
+enum {
   PPID_NONE = 0,  // No protocol is specified.
   // Matches the PPIDs in mozilla source and
   // https://datatracker.ietf.org/doc/draft-ietf-rtcweb-data-protocol Sec. 9
@@ -71,6 +78,59 @@ enum PayloadProtocolIdentifier {
   PPID_TEXT_PARTIAL = 54,
   PPID_TEXT_LAST = 51
 };
+
+// Maps SCTP transport ID to SctpTransport object, necessary in send threshold
+// callback and outgoing packet callback.
+// TODO(crbug.com/1076703): Remove once the underlying problem is fixed or
+// workaround is provided in usrsctp.
+class SctpTransportMap {
+ public:
+  SctpTransportMap() = default;
+
+  // Assigns a new unused ID to the following transport.
+  uintptr_t Register(cricket::SctpTransport* transport) {
+    webrtc::MutexLock lock(&lock_);
+    // usrsctp_connect fails with a value of 0...
+    if (next_id_ == 0) {
+      ++next_id_;
+    }
+    // In case we've wrapped around and need to find an empty spot from a
+    // removed transport. Assumes we'll never be full.
+    while (map_.find(next_id_) != map_.end()) {
+      ++next_id_;
+      if (next_id_ == 0) {
+        ++next_id_;
+      }
+    };
+    map_[next_id_] = transport;
+    return next_id_++;
+  }
+
+  // Returns true if found.
+  bool Deregister(uintptr_t id) {
+    webrtc::MutexLock lock(&lock_);
+    return map_.erase(id) > 0;
+  }
+
+  cricket::SctpTransport* Retrieve(uintptr_t id) const {
+    webrtc::MutexLock lock(&lock_);
+    auto it = map_.find(id);
+    if (it == map_.end()) {
+      return nullptr;
+    }
+    return it->second;
+  }
+
+ private:
+  mutable webrtc::Mutex lock_;
+
+  uintptr_t next_id_ RTC_GUARDED_BY(lock_) = 0;
+  std::unordered_map<uintptr_t, cricket::SctpTransport*> map_
+      RTC_GUARDED_BY(lock_);
+};
+
+// Should only be modified by UsrSctpWrapper.
+ABSL_CONST_INIT SctpTransportMap* g_transport_map_ = nullptr;
 
 // Helper for logging SCTP messages.
 #if defined(__GNUC__)
@@ -88,7 +148,7 @@ void DebugSctpPrintf(const char* format, ...) {
 }
 
 // Get the PPID to use for the terminating fragment of this type.
-PayloadProtocolIdentifier GetPpid(cricket::DataMessageType type) {
+uint32_t GetPpid(cricket::DataMessageType type) {
   switch (type) {
     default:
     case cricket::DMT_NONE:
@@ -102,8 +162,7 @@ PayloadProtocolIdentifier GetPpid(cricket::DataMessageType type) {
   }
 }
 
-bool GetDataMediaType(PayloadProtocolIdentifier ppid,
-                      cricket::DataMessageType* dest) {
+bool GetDataMediaType(uint32_t ppid, cricket::DataMessageType* dest) {
   RTC_DCHECK(dest != NULL);
   switch (ppid) {
     case PPID_BINARY_PARTIAL:
@@ -214,6 +273,11 @@ class SctpTransport::UsrSctpWrapper {
     // TODO(ldixon): Consider turning this on/off.
     usrsctp_sysctl_set_sctp_ecn_enable(0);
 
+    // WebRTC doesn't use these features, so disable them to reduce the
+    // potential attack surface.
+    usrsctp_sysctl_set_sctp_asconf_enable(0);
+    usrsctp_sysctl_set_sctp_auth_enable(0);
+
     // This is harmless, but we should find out when the library default
     // changes.
     int send_size = usrsctp_sysctl_get_sctp_sendspace();
@@ -242,6 +306,8 @@ class SctpTransport::UsrSctpWrapper {
     // Set the number of default outgoing streams. This is the number we'll
     // send in the SCTP INIT message.
     usrsctp_sysctl_set_sctp_nr_outgoing_streams_default(kMaxSctpStreams);
+
+    g_transport_map_ = new SctpTransportMap();
   }
 
   static void UninitializeUsrSctp() {
@@ -251,16 +317,20 @@ class SctpTransport::UsrSctpWrapper {
     // closed. Wait and try again until it succeeds for up to 3 seconds.
     for (size_t i = 0; i < 300; ++i) {
       if (usrsctp_finish() == 0) {
+        delete g_transport_map_;
+        g_transport_map_ = nullptr;
         return;
       }
 
       rtc::Thread::SleepMs(10);
     }
+    delete g_transport_map_;
+    g_transport_map_ = nullptr;
     RTC_LOG(LS_ERROR) << "Failed to shutdown usrsctp.";
   }
 
   static void IncrementUsrSctpUsageCount() {
-    rtc::GlobalLockScope lock(&g_usrsctp_lock_);
+    webrtc::GlobalMutexLock lock(&g_usrsctp_lock_);
     if (!g_usrsctp_usage_count) {
       InitializeUsrSctp();
     }
@@ -268,7 +338,7 @@ class SctpTransport::UsrSctpWrapper {
   }
 
   static void DecrementUsrSctpUsageCount() {
-    rtc::GlobalLockScope lock(&g_usrsctp_lock_);
+    webrtc::GlobalMutexLock lock(&g_usrsctp_lock_);
     --g_usrsctp_usage_count;
     if (!g_usrsctp_usage_count) {
       UninitializeUsrSctp();
@@ -282,7 +352,19 @@ class SctpTransport::UsrSctpWrapper {
                                   size_t length,
                                   uint8_t tos,
                                   uint8_t set_df) {
-    SctpTransport* transport = static_cast<SctpTransport*>(addr);
+    if (!g_transport_map_) {
+      RTC_LOG(LS_ERROR)
+          << "OnSctpOutboundPacket called after usrsctp uninitialized?";
+      return EINVAL;
+    }
+    SctpTransport* transport =
+        g_transport_map_->Retrieve(reinterpret_cast<uintptr_t>(addr));
+    if (!transport) {
+      RTC_LOG(LS_ERROR)
+          << "OnSctpOutboundPacket: Failed to get transport for socket ID "
+          << addr;
+      return EINVAL;
+    }
     RTC_LOG(LS_VERBOSE) << "global OnSctpOutboundPacket():"
                            "addr: "
                         << addr << "; length: " << length
@@ -312,77 +394,10 @@ class SctpTransport::UsrSctpWrapper {
                                  int flags,
                                  void* ulp_info) {
     SctpTransport* transport = static_cast<SctpTransport*>(ulp_info);
-    // Post data to the transport's receiver thread (copying it).
-    // TODO(ldixon): Unclear if copy is needed as this method is responsible for
-    // memory cleanup. But this does simplify code.
-    const PayloadProtocolIdentifier ppid =
-        static_cast<PayloadProtocolIdentifier>(
-            rtc::NetworkToHost32(rcv.rcv_ppid));
-    DataMessageType type = DMT_NONE;
-    if (!GetDataMediaType(ppid, &type) && !(flags & MSG_NOTIFICATION)) {
-      // It's neither a notification nor a recognized data packet.  Drop it.
-      RTC_LOG(LS_ERROR) << "Received an unknown PPID " << ppid
-                        << " on an SCTP packet.  Dropping.";
-      free(data);
-    } else {
-      ReceiveDataParams params;
-
-      params.sid = rcv.rcv_sid;
-      params.seq_num = rcv.rcv_ssn;
-      params.timestamp = rcv.rcv_tsn;
-      params.type = type;
-
-      // Expect only continuation messages belonging to the same sid, the sctp
-      // stack should ensure this.
-      if ((transport->partial_incoming_message_.size() != 0) &&
-          (rcv.rcv_sid != transport->partial_params_.sid)) {
-        // A message with a new sid, but haven't seen the EOR for the
-        // previous message. Deliver the previous partial message to avoid
-        // merging messages from different sid's.
-        transport->invoker_.AsyncInvoke<void>(
-            RTC_FROM_HERE, transport->network_thread_,
-            rtc::Bind(&SctpTransport::OnInboundPacketFromSctpToTransport,
-                      transport, transport->partial_incoming_message_,
-                      transport->partial_params_, transport->partial_flags_));
-
-        transport->partial_incoming_message_.Clear();
-      }
-
-      transport->partial_incoming_message_.AppendData(
-          reinterpret_cast<uint8_t*>(data), length);
-      transport->partial_params_ = params;
-      transport->partial_flags_ = flags;
-
-      free(data);
-
-      // Merge partial messages until they exceed the maximum send buffer size.
-      // This enables messages from a single send to be delivered in a single
-      // callback. Larger messages (originating from other implementations) will
-      // still be delivered in chunks.
-      if (!(flags & MSG_EOR) &&
-          (transport->partial_incoming_message_.size() < kSctpSendBufferSize)) {
-        return 1;
-      }
-
-      if (!(flags & MSG_EOR)) {
-        // TODO(bugs.webrtc.org/7774): We currently chunk messages if they are
-        // >= kSctpSendBufferSize. The better thing to do here is buffer up to
-        // the size negotiated in the SDP, and if a larger message is received
-        // close the channel and report the error. See discussion in the bug.
-        RTC_LOG(LS_WARNING) << "Chunking SCTP message without the EOR bit set.";
-      }
-
-      // The ownership of the packet transfers to |invoker_|. Using
-      // CopyOnWriteBuffer is the most convenient way to do this.
-      transport->invoker_.AsyncInvoke<void>(
-          RTC_FROM_HERE, transport->network_thread_,
-          rtc::Bind(&SctpTransport::OnInboundPacketFromSctpToTransport,
-                    transport, transport->partial_incoming_message_, params,
-                    flags));
-
-      transport->partial_incoming_message_.Clear();
-    }
-    return 1;
+    int result =
+        transport->OnDataOrNotificationFromSctp(data, length, rcv, flags);
+    free(data);
+    return result;
   }
 
   static SctpTransport* GetTransportFromSocket(struct socket* sock) {
@@ -392,14 +407,20 @@ class SctpTransport::UsrSctpWrapper {
       return nullptr;
     }
     // usrsctp_getladdrs() returns the addresses bound to this socket, which
-    // contains the SctpTransport* as sconn_addr.  Read the pointer,
+    // contains the SctpTransport id as sconn_addr.  Read the id,
     // then free the list of addresses once we have the pointer.  We only open
     // AF_CONN sockets, and they should all have the sconn_addr set to the
-    // pointer that created them, so [0] is as good as any other.
+    // id of the transport that created them, so [0] is as good as any other.
     struct sockaddr_conn* sconn =
         reinterpret_cast<struct sockaddr_conn*>(&addrs[0]);
-    SctpTransport* transport =
-        reinterpret_cast<SctpTransport*>(sconn->sconn_addr);
+    if (!g_transport_map_) {
+      RTC_LOG(LS_ERROR)
+          << "GetTransportFromSocket called after usrsctp uninitialized?";
+      usrsctp_freeladdrs(addrs);
+      return nullptr;
+    }
+    SctpTransport* transport = g_transport_map_->Retrieve(
+        reinterpret_cast<uintptr_t>(sconn->sconn_addr));
     usrsctp_freeladdrs(addrs);
 
     return transport;
@@ -779,9 +800,10 @@ bool SctpTransport::OpenSctpSocket() {
     UsrSctpWrapper::DecrementUsrSctpUsageCount();
     return false;
   }
-  // Register this class as an address for usrsctp. This is used by SCTP to
+  id_ = g_transport_map_->Register(this);
+  // Register our id as an address for usrsctp. This is used by SCTP to
   // direct the packets received (by the created socket) to this class.
-  usrsctp_register_address(this);
+  usrsctp_register_address(reinterpret_cast<void*>(id_));
   return true;
 }
 
@@ -872,7 +894,8 @@ void SctpTransport::CloseSctpSocket() {
     // discarded instead of being sent.
     usrsctp_close(sock_);
     sock_ = nullptr;
-    usrsctp_deregister_address(this);
+    usrsctp_deregister_address(reinterpret_cast<void*>(id_));
+    RTC_CHECK(g_transport_map_->Deregister(id_));
     UsrSctpWrapper::DecrementUsrSctpUsageCount();
     ready_to_send_data_ = false;
   }
@@ -1003,7 +1026,7 @@ void SctpTransport::OnPacketRead(rtc::PacketTransportInternal* transport,
     // will be will be given to the global OnSctpInboundData, and then,
     // marshalled by the AsyncInvoker.
     VerboseLogPacket(data, len, SCTP_DUMP_INBOUND);
-    usrsctp_conninput(this, data, len, 0);
+    usrsctp_conninput(reinterpret_cast<void*>(id_), data, len, 0);
   } else {
     // TODO(ldixon): Consider caching the packet for very slightly better
     // reliability.
@@ -1033,7 +1056,7 @@ sockaddr_conn SctpTransport::GetSctpSockAddr(int port) {
 #endif
   // Note: conversion from int to uint16_t happens here.
   sconn.sconn_port = rtc::HostToNetwork16(port);
-  sconn.sconn_addr = this;
+  sconn.sconn_addr = reinterpret_cast<void*>(id_);
   return sconn;
 }
 
@@ -1060,31 +1083,120 @@ void SctpTransport::OnPacketFromSctpToNetwork(
                          rtc::PacketOptions(), PF_NORMAL);
 }
 
-void SctpTransport::OnInboundPacketFromSctpToTransport(
-    const rtc::CopyOnWriteBuffer& buffer,
-    ReceiveDataParams params,
+int SctpTransport::InjectDataOrNotificationFromSctpForTesting(
+    void* data,
+    size_t length,
+    struct sctp_rcvinfo rcv,
     int flags) {
-  RTC_DCHECK_RUN_ON(network_thread_);
-  RTC_LOG(LS_VERBOSE) << debug_name_
-                      << "->OnInboundPacketFromSctpToTransport(...): "
-                         "Received SCTP data:"
-                         " sid="
-                      << params.sid
-                      << " notification: " << (flags & MSG_NOTIFICATION)
-                      << " length=" << buffer.size();
-  // Sending a packet with data == NULL (no data) is SCTPs "close the
-  // connection" message. This sets sock_ = NULL;
-  if (!buffer.size() || !buffer.data()) {
+  return OnDataOrNotificationFromSctp(data, length, rcv, flags);
+}
+
+int SctpTransport::OnDataOrNotificationFromSctp(void* data,
+                                                size_t length,
+                                                struct sctp_rcvinfo rcv,
+                                                int flags) {
+  // If data is NULL, the SCTP association has been closed.
+  if (!data) {
     RTC_LOG(LS_INFO) << debug_name_
-                     << "->OnInboundPacketFromSctpToTransport(...): "
+                     << "->OnSctpInboundPacket(...): "
                         "No data, closing.";
-    return;
+    return kSctpSuccessReturn;
   }
+
+  // Handle notifications early.
+  // Note: Notifications are never split into chunks, so they can and should
+  //       be handled early and entirely separate from the reassembly
+  //       process.
   if (flags & MSG_NOTIFICATION) {
-    OnNotificationFromSctp(buffer);
-  } else {
-    OnDataFromSctpToTransport(params, buffer);
+    RTC_LOG(LS_VERBOSE) << debug_name_
+                        << "->OnSctpInboundPacket(...): SCTP notification"
+                        << " length=" << length;
+
+    // Copy and dispatch asynchronously
+    rtc::CopyOnWriteBuffer notification(reinterpret_cast<uint8_t*>(data),
+                                        length);
+    invoker_.AsyncInvoke<void>(
+        RTC_FROM_HERE, network_thread_,
+        rtc::Bind(&SctpTransport::OnNotificationFromSctp, this, notification));
+    return kSctpSuccessReturn;
   }
+
+  // Log data chunk
+  const uint32_t ppid = rtc::NetworkToHost32(rcv.rcv_ppid);
+  RTC_LOG(LS_VERBOSE) << debug_name_
+                      << "->OnSctpInboundPacket(...): SCTP data chunk"
+                      << " length=" << length << ", sid=" << rcv.rcv_sid
+                      << ", ppid=" << ppid << ", ssn=" << rcv.rcv_ssn
+                      << ", cum-tsn=" << rcv.rcv_cumtsn
+                      << ", eor=" << ((flags & MSG_EOR) ? "y" : "n");
+
+  // Validate payload protocol identifier
+  DataMessageType type = DMT_NONE;
+  if (!GetDataMediaType(ppid, &type)) {
+    // Unexpected PPID, dropping
+    RTC_LOG(LS_ERROR) << "Received an unknown PPID " << ppid
+                      << " on an SCTP packet.  Dropping.";
+    return kSctpSuccessReturn;
+  }
+
+  // Expect only continuation messages belonging to the same SID. The SCTP
+  // stack is expected to ensure this as long as the User Message
+  // Interleaving extension (RFC 8260) is not explicitly enabled, so this
+  // merely acts as a safeguard.
+  if ((partial_incoming_message_.size() != 0) &&
+      (rcv.rcv_sid != partial_params_.sid)) {
+    RTC_LOG(LS_ERROR) << "Received a new SID without EOR in the previous"
+                      << " SCTP packet. Discarding the previous packet.";
+    partial_incoming_message_.Clear();
+  }
+
+  // Copy metadata of interest
+  ReceiveDataParams params;
+  params.type = type;
+  params.sid = rcv.rcv_sid;
+  // Note that the SSN is identical for each chunk of the same message.
+  // Furthermore, it is increased per stream and not on the whole
+  // association.
+  params.seq_num = rcv.rcv_ssn;
+  // There is no timestamp field in the SCTP API
+  params.timestamp = 0;
+
+  // Append the chunk's data to the message buffer
+  partial_incoming_message_.AppendData(reinterpret_cast<uint8_t*>(data),
+                                       length);
+  partial_params_ = params;
+  partial_flags_ = flags;
+
+  // If the message is not yet complete...
+  if (!(flags & MSG_EOR)) {
+    if (partial_incoming_message_.size() < kSctpSendBufferSize) {
+      // We still have space in the buffer. Continue buffering chunks until
+      // the message is complete before handing it out.
+      return kSctpSuccessReturn;
+    } else {
+      // The sender is exceeding the maximum message size that we announced.
+      // Spit out a warning but still hand out the partial message. Note that
+      // this behaviour is undesirable, see the discussion in issue 7774.
+      //
+      // TODO(lgrahl): Once sufficient time has passed and all supported
+      // browser versions obey the announced maximum message size, we should
+      // abort the SCTP association instead to prevent message integrity
+      // violation.
+      RTC_LOG(LS_ERROR) << "Handing out partial SCTP message.";
+    }
+  }
+
+  // Dispatch the complete message.
+  // The ownership of the packet transfers to |invoker_|. Using
+  // CopyOnWriteBuffer is the most convenient way to do this.
+  invoker_.AsyncInvoke<void>(
+      RTC_FROM_HERE, network_thread_,
+      rtc::Bind(&SctpTransport::OnDataFromSctpToTransport, this, params,
+                partial_incoming_message_));
+
+  // Reset the message buffer
+  partial_incoming_message_.Clear();
+  return kSctpSuccessReturn;
 }
 
 void SctpTransport::OnDataFromSctpToTransport(
@@ -1182,6 +1294,9 @@ void SctpTransport::OnNotificationAssocChange(const sctp_assoc_change& change) {
       max_outbound_streams_ = change.sac_outbound_streams;
       max_inbound_streams_ = change.sac_inbound_streams;
       SignalAssociationChangeCommunicationUp();
+      // In case someone tried to close a stream before communication
+      // came up, send any queued resets.
+      SendQueuedStreamResets();
       break;
     case SCTP_COMM_LOST:
       RTC_LOG(LS_INFO) << "Association change SCTP_COMM_LOST";

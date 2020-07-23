@@ -19,6 +19,7 @@
 #include "call/simulated_network.h"
 #include "rtc_base/event.h"
 #include "rtc_base/gunit.h"
+#include "rtc_base/synchronization/mutex.h"
 #include "system_wrappers/include/sleep.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
@@ -27,6 +28,8 @@
 namespace webrtc {
 namespace test {
 namespace {
+
+using ::testing::ElementsAreArray;
 
 constexpr TimeDelta kNetworkPacketWaitTimeout = TimeDelta::Millis(100);
 constexpr TimeDelta kStatsWaitTimeout = TimeDelta::Seconds(1);
@@ -48,12 +51,12 @@ class SocketReader : public sigslot::has_slots<> {
     int64_t timestamp;
     len_ = socket_->Recv(buf_, size_, &timestamp);
 
-    rtc::CritScope crit(&lock_);
+    MutexLock lock(&lock_);
     received_count_++;
   }
 
   int ReceivedCount() {
-    rtc::CritScope crit(&lock_);
+    MutexLock lock(&lock_);
     return received_count_;
   }
 
@@ -64,13 +67,13 @@ class SocketReader : public sigslot::has_slots<> {
   size_t size_;
   int len_;
 
-  rtc::CriticalSection lock_;
+  Mutex lock_;
   int received_count_ RTC_GUARDED_BY(lock_) = 0;
 };
 
 class MockReceiver : public EmulatedNetworkReceiverInterface {
  public:
-  MOCK_METHOD1(OnPacketReceived, void(EmulatedIpPacket packet));
+  MOCK_METHOD(void, OnPacketReceived, (EmulatedIpPacket packet), (override));
 };
 
 class NetworkEmulationManagerThreeNodesRoutingTest : public ::testing::Test {
@@ -247,19 +250,56 @@ TEST(NetworkEmulationManagerTest, Run) {
   nt1->GetStats([&](EmulatedNetworkStats st) {
     EXPECT_EQ(st.packets_sent, 2000l);
     EXPECT_EQ(st.bytes_sent.bytes(), single_packet_size * 2000l);
-    EXPECT_EQ(st.packets_received, 2000l);
-    EXPECT_EQ(st.bytes_received.bytes(), single_packet_size * 2000l);
-    EXPECT_EQ(st.packets_dropped, 0l);
-    EXPECT_EQ(st.bytes_dropped.bytes(), 0l);
+    EXPECT_THAT(st.local_addresses,
+                ElementsAreArray({alice_endpoint->GetPeerLocalAddress()}));
+    EXPECT_EQ(st.PacketsReceived(), 2000l);
+    EXPECT_EQ(st.BytesReceived().bytes(), single_packet_size * 2000l);
+    EXPECT_EQ(st.PacketsDropped(), 0l);
+    EXPECT_EQ(st.BytesDropped().bytes(), 0l);
+
+    EXPECT_EQ(st.incoming_stats_per_source[bob_endpoint->GetPeerLocalAddress()]
+                  .packets_received,
+              2000l);
+    EXPECT_EQ(st.incoming_stats_per_source[bob_endpoint->GetPeerLocalAddress()]
+                  .bytes_received.bytes(),
+              single_packet_size * 2000l);
+    EXPECT_EQ(st.incoming_stats_per_source[bob_endpoint->GetPeerLocalAddress()]
+                  .packets_dropped,
+              0l);
+    EXPECT_EQ(st.incoming_stats_per_source[bob_endpoint->GetPeerLocalAddress()]
+                  .bytes_dropped.bytes(),
+              0l);
     received_stats_count++;
   });
   nt2->GetStats([&](EmulatedNetworkStats st) {
     EXPECT_EQ(st.packets_sent, 2000l);
     EXPECT_EQ(st.bytes_sent.bytes(), single_packet_size * 2000l);
-    EXPECT_EQ(st.packets_received, 2000l);
-    EXPECT_EQ(st.bytes_received.bytes(), single_packet_size * 2000l);
-    EXPECT_EQ(st.packets_dropped, 0l);
-    EXPECT_EQ(st.bytes_dropped.bytes(), 0l);
+    EXPECT_THAT(st.local_addresses,
+                ElementsAreArray({bob_endpoint->GetPeerLocalAddress()}));
+    EXPECT_EQ(st.PacketsReceived(), 2000l);
+    EXPECT_EQ(st.BytesReceived().bytes(), single_packet_size * 2000l);
+    EXPECT_EQ(st.PacketsDropped(), 0l);
+    EXPECT_EQ(st.BytesDropped().bytes(), 0l);
+    EXPECT_GT(st.FirstReceivedPacketSize(), DataSize::Zero());
+    EXPECT_TRUE(st.FirstPacketReceivedTime().IsFinite());
+    EXPECT_TRUE(st.LastPacketReceivedTime().IsFinite());
+
+    EXPECT_EQ(
+        st.incoming_stats_per_source[alice_endpoint->GetPeerLocalAddress()]
+            .packets_received,
+        2000l);
+    EXPECT_EQ(
+        st.incoming_stats_per_source[alice_endpoint->GetPeerLocalAddress()]
+            .bytes_received.bytes(),
+        single_packet_size * 2000l);
+    EXPECT_EQ(
+        st.incoming_stats_per_source[alice_endpoint->GetPeerLocalAddress()]
+            .packets_dropped,
+        0l);
+    EXPECT_EQ(
+        st.incoming_stats_per_source[alice_endpoint->GetPeerLocalAddress()]
+            .bytes_dropped.bytes(),
+        0l);
     received_stats_count++;
   });
   ASSERT_EQ_SIMULATED_WAIT(received_stats_count.load(), 2,
