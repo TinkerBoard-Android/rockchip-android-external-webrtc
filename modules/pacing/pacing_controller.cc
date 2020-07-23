@@ -193,6 +193,10 @@ bool PacingController::Congested() const {
   return false;
 }
 
+bool PacingController::IsProbing() const {
+  return prober_.is_probing();
+}
+
 Timestamp PacingController::CurrentTime() const {
   Timestamp time = clock_->CurrentTime();
   if (time < last_timestamp_) {
@@ -285,7 +289,7 @@ TimeDelta PacingController::OldestPacketWaitTime() const {
 void PacingController::EnqueuePacketInternal(
     std::unique_ptr<RtpPacketToSend> packet,
     int priority) {
-  prober_.OnIncomingPacket(packet->payload_size());
+  prober_.OnIncomingPacket(DataSize::Bytes(packet->payload_size()));
 
   // TODO(sprang): Make sure tests respect this, replace with DCHECK.
   Timestamp now = CurrentTime();
@@ -331,7 +335,7 @@ bool PacingController::ShouldSendKeepalive(Timestamp now) const {
 }
 
 Timestamp PacingController::NextSendTime() const {
-  Timestamp now = CurrentTime();
+  const Timestamp now = CurrentTime();
 
   if (paused_) {
     return last_send_time_ + kPausedProcessInterval;
@@ -399,7 +403,9 @@ void PacingController::ProcessPackets() {
     if (target_send_time.IsMinusInfinity()) {
       target_send_time = now;
     } else if (now < target_send_time) {
-      // We are too early, abort and regroup!
+      // We are too early, but if queue is empty still allow draining some debt.
+      TimeDelta elapsed_time = UpdateTimeAndGetElapsed(now);
+      UpdateBudgetWithElapsedTime(elapsed_time);
       return;
     }
 
@@ -434,7 +440,10 @@ void PacingController::ProcessPackets() {
       for (auto& packet : keepalive_packets) {
         keepalive_data_sent +=
             DataSize::Bytes(packet->payload_size() + packet->padding_size());
-        packet_sender_->SendRtpPacket(std::move(packet), PacedPacketInfo());
+        packet_sender_->SendPacket(std::move(packet), PacedPacketInfo());
+        for (auto& packet : packet_sender_->FetchFec()) {
+          EnqueuePacket(std::move(packet));
+        }
       }
       OnPaddingSent(keepalive_data_sent);
     }
@@ -477,13 +486,21 @@ void PacingController::ProcessPackets() {
   }
 
   bool first_packet_in_probe = false;
-  bool is_probing = prober_.is_probing();
   PacedPacketInfo pacing_info;
-  absl::optional<DataSize> recommended_probe_size;
+  DataSize recommended_probe_size = DataSize::Zero();
+  bool is_probing = prober_.is_probing();
   if (is_probing) {
-    pacing_info = prober_.CurrentCluster();
-    first_packet_in_probe = pacing_info.probe_cluster_bytes_sent == 0;
-    recommended_probe_size = DataSize::Bytes(prober_.RecommendedMinProbeSize());
+    // Probe timing is sensitive, and handled explicitly by BitrateProber, so
+    // use actual send time rather than target.
+    pacing_info = prober_.CurrentCluster(now).value_or(PacedPacketInfo());
+    if (pacing_info.probe_cluster_id != PacedPacketInfo::kNotAProbe) {
+      first_packet_in_probe = pacing_info.probe_cluster_bytes_sent == 0;
+      recommended_probe_size = prober_.RecommendedMinProbeSize();
+      RTC_DCHECK_GT(recommended_probe_size, DataSize::Zero());
+    } else {
+      // No valid probe cluster returned, probe might have timed out.
+      is_probing = false;
+    }
   }
 
   DataSize data_sent = DataSize::Zero();
@@ -553,14 +570,21 @@ void PacingController::ProcessPackets() {
       packet_size += DataSize::Bytes(rtp_packet->headers_size()) +
                      transport_overhead_per_packet_;
     }
-    packet_sender_->SendRtpPacket(std::move(rtp_packet), pacing_info);
 
+    packet_sender_->SendPacket(std::move(rtp_packet), pacing_info);
+    for (auto& packet : packet_sender_->FetchFec()) {
+      EnqueuePacket(std::move(packet));
+    }
     data_sent += packet_size;
 
     // Send done, update send/process time to the target send time.
     OnPacketSent(packet_type, packet_size, target_send_time);
-    if (recommended_probe_size && data_sent > *recommended_probe_size)
+
+    // If we are currently probing, we need to stop the send loop when we have
+    // reached the send target.
+    if (is_probing && data_sent > recommended_probe_size) {
       break;
+    }
 
     if (mode_ == ProcessMode::kDynamic) {
       // Update target send time in case that are more packets that we are late
@@ -579,14 +603,13 @@ void PacingController::ProcessPackets() {
   if (is_probing) {
     probing_send_failure_ = data_sent == DataSize::Zero();
     if (!probing_send_failure_) {
-      prober_.ProbeSent(CurrentTime(), data_sent.bytes());
+      prober_.ProbeSent(CurrentTime(), data_sent);
     }
   }
 }
 
-DataSize PacingController::PaddingToAdd(
-    absl::optional<DataSize> recommended_probe_size,
-    DataSize data_sent) const {
+DataSize PacingController::PaddingToAdd(DataSize recommended_probe_size,
+                                        DataSize data_sent) const {
   if (!packet_queue_.Empty()) {
     // Actual payload available, no need to add padding.
     return DataSize::Zero();
@@ -603,9 +626,9 @@ DataSize PacingController::PaddingToAdd(
     return DataSize::Zero();
   }
 
-  if (recommended_probe_size) {
-    if (*recommended_probe_size > data_sent) {
-      return *recommended_probe_size - data_sent;
+  if (!recommended_probe_size.IsZero()) {
+    if (recommended_probe_size > data_sent) {
+      return recommended_probe_size - data_sent;
     }
     return DataSize::Zero();
   }
