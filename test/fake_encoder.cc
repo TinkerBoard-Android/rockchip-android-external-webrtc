@@ -67,19 +67,19 @@ void FakeEncoder::SetFecControllerOverride(
 
 void FakeEncoder::SetMaxBitrate(int max_kbps) {
   RTC_DCHECK_GE(max_kbps, -1);  // max_kbps == -1 disables it.
-  rtc::CritScope cs(&crit_sect_);
+  MutexLock lock(&mutex_);
   max_target_bitrate_kbps_ = max_kbps;
-  SetRates(current_rate_settings_);
+  SetRatesLocked(current_rate_settings_);
 }
 
 void FakeEncoder::SetQp(int qp) {
-  rtc::CritScope cs(&crit_sect_);
+  MutexLock lock(&mutex_);
   qp_ = qp;
 }
 
 int32_t FakeEncoder::InitEncode(const VideoCodec* config,
                                 const Settings& settings) {
-  rtc::CritScope cs(&crit_sect_);
+  MutexLock lock(&mutex_);
   config_ = *config;
   current_rate_settings_.bitrate.SetBitrate(0, 0, config_.startBitrate * 1000);
   current_rate_settings_.framerate_fps = config_.maxFramerate;
@@ -100,7 +100,7 @@ int32_t FakeEncoder::Encode(const VideoFrame& input_image,
   uint32_t counter;
   absl::optional<int> qp;
   {
-    rtc::CritScope cs(&crit_sect_);
+    MutexLock lock(&mutex_);
     max_framerate = config_.maxFramerate;
     num_simulcast_streams = config_.numberOfSimulcastStreams;
     for (int i = 0; i < num_simulcast_streams; ++i) {
@@ -182,7 +182,7 @@ FakeEncoder::FrameInfo FakeEncoder::NextFrame(
     }
   }
 
-  rtc::CritScope cs(&crit_sect_);
+  MutexLock lock(&mutex_);
   for (uint8_t i = 0; i < num_simulcast_streams; ++i) {
     if (target_bitrate.GetBitrate(i, 0) > 0) {
       int temporal_id = last_frame_info_.layers.size() > i
@@ -232,7 +232,7 @@ FakeEncoder::FrameInfo FakeEncoder::NextFrame(
 
 int32_t FakeEncoder::RegisterEncodeCompleteCallback(
     EncodedImageCallback* callback) {
-  rtc::CritScope cs(&crit_sect_);
+  MutexLock lock(&mutex_);
   callback_ = callback;
   return 0;
 }
@@ -242,7 +242,11 @@ int32_t FakeEncoder::Release() {
 }
 
 void FakeEncoder::SetRates(const RateControlParameters& parameters) {
-  rtc::CritScope cs(&crit_sect_);
+  MutexLock lock(&mutex_);
+  SetRatesLocked(parameters);
+}
+
+void FakeEncoder::SetRatesLocked(const RateControlParameters& parameters) {
   current_rate_settings_ = parameters;
   int allocated_bitrate_kbps = parameters.bitrate.get_sum_kbps();
 
@@ -276,7 +280,7 @@ VideoEncoder::EncoderInfo FakeEncoder::GetEncoderInfo() const {
 }
 
 int FakeEncoder::GetConfiguredInputFramerate() const {
-  rtc::CritScope cs(&crit_sect_);
+  MutexLock lock(&mutex_);
   return static_cast<int>(current_rate_settings_.framerate_fps + 0.5);
 }
 
@@ -286,55 +290,56 @@ FakeH264Encoder::FakeH264Encoder(Clock* clock)
 std::unique_ptr<RTPFragmentationHeader> FakeH264Encoder::EncodeHook(
     EncodedImage* encoded_image,
     CodecSpecificInfo* codec_specific) {
+  static constexpr std::array<uint8_t, 3> kStartCode = {0, 0, 1};
   const size_t kSpsSize = 8;
   const size_t kPpsSize = 11;
   const int kIdrFrequency = 10;
   int current_idr_counter;
   {
-    rtc::CritScope cs(&local_crit_sect_);
+    MutexLock lock(&local_mutex_);
     current_idr_counter = idr_counter_;
     ++idr_counter_;
   }
+  for (size_t i = 0; i < encoded_image->size(); ++i) {
+    encoded_image->data()[i] = static_cast<uint8_t>(i);
+  }
+
   auto fragmentation = std::make_unique<RTPFragmentationHeader>();
 
   if (current_idr_counter % kIdrFrequency == 0 &&
-      encoded_image->size() > kSpsSize + kPpsSize + 1) {
+      encoded_image->size() > kSpsSize + kPpsSize + 1 + 3 * kStartCode.size()) {
     const size_t kNumSlices = 3;
     fragmentation->VerifyAndAllocateFragmentationHeader(kNumSlices);
-    fragmentation->fragmentationOffset[0] = 0;
+    fragmentation->fragmentationOffset[0] = kStartCode.size();
     fragmentation->fragmentationLength[0] = kSpsSize;
-    fragmentation->fragmentationOffset[1] = kSpsSize;
+    fragmentation->fragmentationOffset[1] = 2 * kStartCode.size() + kSpsSize;
     fragmentation->fragmentationLength[1] = kPpsSize;
-    fragmentation->fragmentationOffset[2] = kSpsSize + kPpsSize;
+    fragmentation->fragmentationOffset[2] =
+        3 * kStartCode.size() + kSpsSize + kPpsSize;
     fragmentation->fragmentationLength[2] =
-        encoded_image->size() - (kSpsSize + kPpsSize);
+        encoded_image->size() - (3 * kStartCode.size() + kSpsSize + kPpsSize);
     const size_t kSpsNalHeader = 0x67;
     const size_t kPpsNalHeader = 0x68;
     const size_t kIdrNalHeader = 0x65;
-    encoded_image->data()[fragmentation->fragmentationOffset[0]] =
-        kSpsNalHeader;
-    encoded_image->data()[fragmentation->fragmentationOffset[1]] =
-        kPpsNalHeader;
-    encoded_image->data()[fragmentation->fragmentationOffset[2]] =
-        kIdrNalHeader;
+    memcpy(encoded_image->data(), kStartCode.data(), kStartCode.size());
+    encoded_image->data()[fragmentation->Offset(0)] = kSpsNalHeader;
+    memcpy(encoded_image->data() + fragmentation->Offset(1) - kStartCode.size(),
+           kStartCode.data(), kStartCode.size());
+    encoded_image->data()[fragmentation->Offset(1)] = kPpsNalHeader;
+    memcpy(encoded_image->data() + fragmentation->Offset(2) - kStartCode.size(),
+           kStartCode.data(), kStartCode.size());
+    encoded_image->data()[fragmentation->Offset(2)] = kIdrNalHeader;
   } else {
     const size_t kNumSlices = 1;
     fragmentation->VerifyAndAllocateFragmentationHeader(kNumSlices);
-    fragmentation->fragmentationOffset[0] = 0;
-    fragmentation->fragmentationLength[0] = encoded_image->size();
+    fragmentation->fragmentationOffset[0] = kStartCode.size();
+    fragmentation->fragmentationLength[0] =
+        encoded_image->size() - kStartCode.size();
+    memcpy(encoded_image->data(), kStartCode.data(), kStartCode.size());
     const size_t kNalHeader = 0x41;
     encoded_image->data()[fragmentation->fragmentationOffset[0]] = kNalHeader;
   }
-  uint8_t value = 0;
-  int fragment_counter = 0;
-  for (size_t i = 0; i < encoded_image->size(); ++i) {
-    if (fragment_counter == fragmentation->fragmentationVectorSize ||
-        i != fragmentation->fragmentationOffset[fragment_counter]) {
-      encoded_image->data()[i] = value++;
-    } else {
-      ++fragment_counter;
-    }
-  }
+
   codec_specific->codecType = kVideoCodecH264;
   codec_specific->codecSpecific.H264.packetization_mode =
       H264PacketizationMode::NonInterleaved;
