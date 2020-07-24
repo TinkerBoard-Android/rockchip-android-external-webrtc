@@ -187,11 +187,15 @@ class I010BufferBase : public I010BufferInterface {
 rtc::scoped_refptr<I420BufferInterface> I010BufferBase::ToI420() {
   rtc::scoped_refptr<I420Buffer> i420_buffer =
       I420Buffer::Create(width(), height());
+#if 0
   libyuv::I010ToI420(DataY(), StrideY(), DataU(), StrideU(), DataV(), StrideV(),
                      i420_buffer->MutableDataY(), i420_buffer->StrideY(),
                      i420_buffer->MutableDataU(), i420_buffer->StrideU(),
                      i420_buffer->MutableDataV(), i420_buffer->StrideV(),
                      width(), height());
+#else
+  abort();
+#endif
   return i420_buffer;
 }
 
