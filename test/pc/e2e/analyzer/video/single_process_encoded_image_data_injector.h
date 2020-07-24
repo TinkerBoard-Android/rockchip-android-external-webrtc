@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "api/video/encoded_image.h"
-#include "rtc_base/critical_section.h"
+#include "rtc_base/synchronization/mutex.h"
 #include "test/pc/e2e/analyzer/video/encoded_image_data_injector.h"
 
 namespace webrtc {
@@ -57,15 +57,16 @@ class SingleProcessEncodedImageDataInjector : public EncodedImageDataInjector,
   // Contains data required to extract frame id from EncodedImage and restore
   // original buffer.
   struct ExtractionInfo {
+    // Number of bytes from the beginning of the EncodedImage buffer that will
+    // be used to store frame id and sub id.
+    const static size_t kUsedBufferSize = 3;
     // Frame sub id to distinguish encoded images for different spatial layers.
     uint8_t sub_id;
-    // Length of the origin buffer encoded image.
-    size_t length;
     // Flag to show is this encoded images should be discarded by analyzing
     // decoder because of not required spatial layer/simulcast stream.
     bool discard;
     // Data from first 3 bytes of origin encoded image's payload.
-    uint8_t origin_data[3];
+    uint8_t origin_data[ExtractionInfo::kUsedBufferSize];
   };
 
   struct ExtractionInfoVector {
@@ -77,7 +78,7 @@ class SingleProcessEncodedImageDataInjector : public EncodedImageDataInjector,
     std::map<uint8_t, ExtractionInfo> infos;
   };
 
-  rtc::CriticalSection lock_;
+  Mutex lock_;
   // Stores a mapping from frame id to extraction info for spatial layers
   // for this frame id. There can be a lot of them, because if frame was
   // dropped we can't clean it up, because we won't receive a signal on

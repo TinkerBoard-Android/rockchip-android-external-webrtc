@@ -133,6 +133,7 @@ if (rtc_include_tests) {
       "../../rtc_base:rtc_task_queue",
       "../../rtc_base:safe_minmax",
       "../../rtc_base:task_queue_for_test",
+      "../../rtc_base/synchronization:mutex",
       "../../rtc_base/synchronization:sequence_checker",
       "../../rtc_base/task_utils:repeating_task",
       "../../system_wrappers",
@@ -141,6 +142,8 @@ if (rtc_include_tests) {
       "../logging:log_writer",
       "../network:emulated_network",
       "../time_controller",
+    ]
+    absl_deps = [
       "//third_party/abseil-cpp/absl/flags:flag",
       "//third_party/abseil-cpp/absl/flags:parse",
       "//third_party/abseil-cpp/absl/memory",
