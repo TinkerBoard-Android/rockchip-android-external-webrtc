@@ -26,13 +26,14 @@
 #include "api/media_stream_interface.h"
 #include "api/peer_connection_interface.h"
 #include "api/rtc_event_log/rtc_event_log_factory_interface.h"
+#include "api/rtp_parameters.h"
 #include "api/task_queue/task_queue_factory.h"
 #include "api/test/audio_quality_analyzer_interface.h"
 #include "api/test/frame_generator_interface.h"
 #include "api/test/simulated_network.h"
 #include "api/test/stats_observer_interface.h"
+#include "api/test/track_id_stream_info_map.h"
 #include "api/test/video_quality_analyzer_interface.h"
-#include "api/transport/media/media_transport_interface.h"
 #include "api/transport/network_control.h"
 #include "api/units/time_delta.h"
 #include "api/video_codecs/video_decoder_factory.h"
@@ -53,6 +54,12 @@ constexpr size_t kDefaultSlidesHeight = 1110;
 // API is in development. Can be changed/removed without notice.
 class PeerConnectionE2EQualityTestFixture {
  public:
+  // The index of required capturing device in OS provided list of video
+  // devices. On Linux and Windows the list will be obtained via
+  // webrtc::VideoCaptureModule::DeviceInfo, on Mac OS via
+  // [RTCCameraVideoCapturer captureDevices].
+  enum class CapturingDeviceIndex : size_t {};
+
   // Contains parameters for screen share scrolling.
   //
   // If scrolling is enabled, then it will be done by putting sliding window
@@ -116,8 +123,6 @@ class PeerConnectionE2EQualityTestFixture {
     std::vector<std::string> slides_yuv_file_names;
   };
 
-  enum VideoGeneratorType { kDefault, kI420A, kI010 };
-
   // Config for Vp8 simulcast or Vp9 SVC testing.
   //
   // SVC support is limited:
@@ -160,6 +165,14 @@ class PeerConnectionE2EQualityTestFixture {
     // It requires Selective Forwarding Unit (SFU) to be configured in the
     // network.
     absl::optional<int> target_spatial_index;
+
+    // Encoding parameters per simulcast layer. If not empty, |encoding_params|
+    // size have to be equal to |simulcast_streams_count|. Will be used to set
+    // transceiver send encoding params for simulcast layers. Applicable only
+    // for codecs that support simulcast (ex. Vp8) and will be ignored
+    // otherwise. RtpEncodingParameters::rid may be changed by fixture
+    // implementation to ensure signaling correctness.
+    std::vector<RtpEncodingParameters> encoding_params;
   };
 
   // Contains properties of single video stream.
@@ -178,12 +191,6 @@ class PeerConnectionE2EQualityTestFixture {
     // Will be set for current video track. If equals to kText or kDetailed -
     // screencast in on.
     absl::optional<VideoTrackInterface::ContentHint> content_hint;
-    // If specified this capturing device will be used to get input video. The
-    // |capturing_device_index| is the index of required capturing device in OS
-    // provided list of video devices. On Linux and Windows the list will be
-    // obtained via webrtc::VideoCaptureModule::DeviceInfo, on Mac OS via
-    // [RTCCameraVideoCapturer captureDevices].
-    absl::optional<size_t> capturing_device_index;
     // If presented video will be transfered in simulcast/SVC mode depending on
     // which encoder is used.
     //
@@ -222,8 +229,7 @@ class PeerConnectionE2EQualityTestFixture {
     bool show_on_screen = false;
     // If specified, determines a sync group to which this video stream belongs.
     // According to bugs.webrtc.org/4762 WebRTC supports synchronization only
-    // for pair of single audio and single video stream. Framework won't do any
-    // enforcements on this field.
+    // for pair of single audio and single video stream.
     absl::optional<std::string> sync_group;
   };
 
@@ -250,8 +256,7 @@ class PeerConnectionE2EQualityTestFixture {
     int sampling_frequency_in_hz = 48000;
     // If specified, determines a sync group to which this audio stream belongs.
     // According to bugs.webrtc.org/4762 WebRTC supports synchronization only
-    // for pair of single audio and single video stream. Framework won't do any
-    // enforcements on this field.
+    // for pair of single audio and single video stream.
     absl::optional<std::string> sync_group;
   };
 
@@ -280,8 +285,6 @@ class PeerConnectionE2EQualityTestFixture {
     virtual PeerConfigurer* SetNetworkControllerFactory(
         std::unique_ptr<NetworkControllerFactoryInterface>
             network_controller_factory) = 0;
-    virtual PeerConfigurer* SetMediaTransportFactory(
-        std::unique_ptr<MediaTransportFactory> media_transport_factory) = 0;
     virtual PeerConfigurer* SetVideoEncoderFactory(
         std::unique_ptr<VideoEncoderFactory> video_encoder_factory) = 0;
     virtual PeerConfigurer* SetVideoDecoderFactory(
@@ -312,6 +315,11 @@ class PeerConnectionE2EQualityTestFixture {
     virtual PeerConfigurer* AddVideoConfig(
         VideoConfig config,
         std::unique_ptr<test::FrameGeneratorInterface> generator) = 0;
+    // Add new video stream to the call that will be sent from this peer.
+    // Capturing device with specified index will be used to get input video.
+    virtual PeerConfigurer* AddVideoConfig(
+        VideoConfig config,
+        CapturingDeviceIndex capturing_device_index) = 0;
     // Set the audio stream for the call from this peer. If this method won't
     // be invoked, this peer will send no audio.
     virtual PeerConfigurer* SetAudioConfig(AudioConfig config) = 0;
@@ -325,8 +333,8 @@ class PeerConnectionE2EQualityTestFixture {
         PeerConnectionInterface::RTCConfiguration configuration) = 0;
     // Set bitrate parameters on PeerConnection. This constraints will be
     // applied to all summed RTP streams for this peer.
-    virtual PeerConfigurer* SetBitrateParameters(
-        PeerConnectionInterface::BitrateParameters bitrate_params) = 0;
+    virtual PeerConfigurer* SetBitrateSettings(
+        BitrateSettings bitrate_settings) = 0;
   };
 
   // Contains configuration for echo emulator.
@@ -400,7 +408,14 @@ class PeerConnectionE2EQualityTestFixture {
 
     // Invoked by framework after peer connection factory and peer connection
     // itself will be created but before offer/answer exchange will be started.
-    virtual void Start(absl::string_view test_case_name) = 0;
+    // |test_case_name| is name of test case, that should be used to report all
+    // metrics.
+    // |reporter_helper| is a pointer to a class that will allow track_id to
+    // stream_id matching. The caller is responsible for ensuring the
+    // TrackIdStreamInfoMap will be valid from Start() to
+    // StopAndReportResults().
+    virtual void Start(absl::string_view test_case_name,
+                       const TrackIdStreamInfoMap* reporter_helper) = 0;
 
     // Invoked by framework after call is ended and peer connection factory and
     // peer connection are destroyed.
@@ -436,6 +451,12 @@ class PeerConnectionE2EQualityTestFixture {
   virtual void AddPeer(rtc::Thread* network_thread,
                        rtc::NetworkManager* network_manager,
                        rtc::FunctionView<void(PeerConfigurer*)> configurer) = 0;
+  // Runs the media quality test, which includes setting up the call with
+  // configured participants, running it according to provided |run_params| and
+  // terminating it properly at the end. During call duration media quality
+  // metrics are gathered, which are then reported to stdout and (if configured)
+  // to the json/protobuf output file through the WebRTC perf test results
+  // reporting system.
   virtual void Run(RunParams run_params) = 0;
 
   // Returns real test duration - the time of test execution measured during

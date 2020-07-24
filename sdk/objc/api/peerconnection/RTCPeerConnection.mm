@@ -29,7 +29,6 @@
 
 #include "api/jsep_ice_candidate.h"
 #include "api/rtc_event_log_output_file.h"
-#include "api/transport/media/media_transport_interface.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/numerics/safe_conversions.h"
 
@@ -559,12 +558,12 @@ void PeerConnectionDelegateAdapter::OnRemoveTrack(
 - (BOOL)setBweMinBitrateBps:(nullable NSNumber *)minBitrateBps
           currentBitrateBps:(nullable NSNumber *)currentBitrateBps
               maxBitrateBps:(nullable NSNumber *)maxBitrateBps {
-  webrtc::PeerConnectionInterface::BitrateParameters params;
+  webrtc::BitrateSettings params;
   if (minBitrateBps != nil) {
     params.min_bitrate_bps = absl::optional<int>(minBitrateBps.intValue);
   }
   if (currentBitrateBps != nil) {
-    params.current_bitrate_bps = absl::optional<int>(currentBitrateBps.intValue);
+    params.start_bitrate_bps = absl::optional<int>(currentBitrateBps.intValue);
   }
   if (maxBitrateBps != nil) {
     params.max_bitrate_bps = absl::optional<int>(maxBitrateBps.intValue);

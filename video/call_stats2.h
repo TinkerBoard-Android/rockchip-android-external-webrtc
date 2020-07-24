@@ -14,13 +14,14 @@
 #include <list>
 #include <memory>
 
+#include "api/units/timestamp.h"
 #include "modules/include/module_common_types.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "rtc_base/constructor_magic.h"
-#include "rtc_base/critical_section.h"
 #include "rtc_base/synchronization/sequence_checker.h"
 #include "rtc_base/task_queue.h"
 #include "rtc_base/task_utils/pending_task_safety_flag.h"
+#include "rtc_base/task_utils/repeating_task.h"
 #include "system_wrappers/include/clock.h"
 
 namespace webrtc {
@@ -29,7 +30,7 @@ namespace internal {
 class CallStats {
  public:
   // Time interval for updating the observers.
-  static constexpr int64_t kUpdateIntervalMs = 1000;
+  static constexpr TimeDelta kUpdateInterval = TimeDelta::Millis(1000);
 
   CallStats(Clock* clock, TaskQueueBase* task_queue);
   ~CallStats();
@@ -68,9 +69,6 @@ class CallStats {
  private:
   // Part of the RtcpRttStats implementation. Called by RtcpRttStatsImpl.
   void OnRttUpdate(int64_t rtt);
-  int64_t LastProcessedRttFromProcessThread() const;
-
-  void RunTimer();
 
   void UpdateAndReport();
 
@@ -80,41 +78,41 @@ class CallStats {
 
   class RtcpRttStatsImpl : public RtcpRttStats {
    public:
-    explicit RtcpRttStatsImpl(CallStats* owner) : owner_(owner) {
-      process_thread_checker_.Detach();
-    }
+    explicit RtcpRttStatsImpl(CallStats* owner) : owner_(owner) {}
     ~RtcpRttStatsImpl() override = default;
 
    private:
     void OnRttUpdate(int64_t rtt) override {
-      RTC_DCHECK_RUN_ON(&process_thread_checker_);
+      // For video send streams (video/video_send_stream.cc), the RtpRtcp module
+      // is currently created on a transport worker TaskQueue and not the worker
+      // thread - which is what happens in other cases. We should probably fix
+      // that so that the call consistently comes in on the right thread.
       owner_->OnRttUpdate(rtt);
     }
 
     int64_t LastProcessedRtt() const override {
-      RTC_DCHECK_RUN_ON(&process_thread_checker_);
-      return owner_->LastProcessedRttFromProcessThread();
+      // This call path shouldn't be used anymore. This impl is only for
+      // propagating the rtt from the RtpRtcp module, which does not call
+      // LastProcessedRtt(). Down the line we should consider removing
+      // LastProcessedRtt() and use the interface for event notifications only.
+      RTC_NOTREACHED() << "Legacy call path";
+      return 0;
     }
 
     CallStats* const owner_;
-    SequenceChecker process_thread_checker_;
   } rtcp_rtt_stats_impl_{this};
 
   Clock* const clock_;
 
-  // The last time 'Process' resulted in statistic update.
-  int64_t last_process_time_ RTC_GUARDED_BY(construction_thread_checker_);
+  // Used to regularly call UpdateAndReport().
+  RepeatingTaskHandle repeating_task_
+      RTC_GUARDED_BY(construction_thread_checker_);
+
   // The last RTT in the statistics update (zero if there is no valid estimate).
   int64_t max_rtt_ms_ RTC_GUARDED_BY(construction_thread_checker_);
 
-  // Accessed from two separate threads.
-  // |avg_rtt_ms_| may be read on the construction thread without a lock.
-  // |avg_rtt_ms_lock_| must be held elsewhere for reading.
-  // |avg_rtt_ms_lock_| must be held on the construction thread for writing.
-  int64_t avg_rtt_ms_;
-
-  // Protects |avg_rtt_ms_|.
-  rtc::CriticalSection avg_rtt_ms_lock_;
+  // Last reported average RTT value.
+  int64_t avg_rtt_ms_ RTC_GUARDED_BY(construction_thread_checker_);
 
   // |sum_avg_rtt_ms_|, |num_avg_rtt_| and |time_of_first_rtt_ms_| are only used
   // on the ProcessThread when running. When the Process Thread is not running,
@@ -139,8 +137,7 @@ class CallStats {
   TaskQueueBase* const task_queue_;
 
   // Used to signal destruction to potentially pending tasks.
-  PendingTaskSafetyFlag::Pointer task_safety_flag_ =
-      PendingTaskSafetyFlag::Create();
+  ScopedTaskSafety task_safety_;
 
   RTC_DISALLOW_COPY_AND_ASSIGN(CallStats);
 };
