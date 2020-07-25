@@ -768,7 +768,13 @@ int VP9EncoderImpl::InitAndSetControlSettings(const VideoCodec* inst) {
       // Screenshare dropping mode: drop a layer only together with all lower
       // layers. This ensures that drops on lower layers won't reduce frame-rate
       // for higher layers and reference structure is RTP-compatible.
+#if 0
+      // CONSTRAINED_FROM_ABOVE_DROP is not defined in the available version of
+      // libvpx
       svc_drop_frame_.framedrop_mode = CONSTRAINED_FROM_ABOVE_DROP;
+#else
+      abort();
+#endif
       svc_drop_frame_.max_consec_drop = 5;
       for (size_t i = 0; i < num_spatial_layers_; ++i) {
         svc_drop_frame_.framedrop_thresh[i] = config_->rc_dropframe_thresh;
