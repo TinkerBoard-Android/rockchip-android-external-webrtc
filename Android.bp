@@ -49,6 +49,11 @@ cc_defaults {
             enabled: false,
         },
     },
+    target: {
+        darwin: {
+            enabled: false,
+        },
+    },
 }
 
 cc_library_static {
