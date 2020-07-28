@@ -150,6 +150,11 @@ def GenerateDefault(targets):
         print('            enabled: false,')
         print('        },')
         print('    },')
+        print('    target: {')
+        print('        darwin: {')
+        print('            enabled: false,')
+        print('        },')
+        print('    },')
         print('}')
     in_default['cflags'].extend([
         "-Wno-unused-parameter",
