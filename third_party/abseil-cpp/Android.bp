@@ -5,12 +5,17 @@ cc_defaults {
         "//device/google/cuttlefish/host/frontend/webrtc:__subpackages__",
     ],
 }
+
 cc_library_headers {
     name: "libwebrtc_absl_headers",
     defaults: ["libwebrtc_absl_defaults"],
-    device_supported: false,
+    // vendor needed for libpreprocessing effects.
+    vendor: true,
     host_supported: true,
     export_include_dirs: ["."],
+    visibility: [
+        "//frameworks/av/media/libeffects/preprocessing:__subpackages__",
+    ],
 }
 
 cc_library_host_static {
