@@ -29,7 +29,7 @@
 
 // Android has a 1024 limit on log inputs. We use 60 chars as an
 // approx for the header/tag portion.
-// See android/system/core/liblog/logd_write.c
+// See android/system/logging/liblog/logd_write.c
 static const int kMaxLogLineSize = 1024 - 60;
 #endif  // WEBRTC_MAC && !defined(WEBRTC_IOS) || WEBRTC_ANDROID
 
