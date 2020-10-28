@@ -25,7 +25,7 @@ cc_defaults {
         "-DWEBRTC_LINUX",
     ],
     header_libs: [
-        "libabsl_headers",
+        "libwebrtc_absl_headers",
     ],
     static_libs: [
         "libaom",
