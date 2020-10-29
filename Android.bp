@@ -43,17 +43,17 @@ cc_defaults {
         "libssl",
     ],
     host_supported: true,
-    device_supported: false,
-    arch: {
-        arm: {
-            enabled: false,
-        },
-    },
+    // vendor needed for libpreprocessing effects.
+    vendor: true,
     target: {
         darwin: {
             enabled: false,
         },
     },
+    visibility: [
+        "//frameworks/av/media/libeffects/preprocessing:__subpackages__",
+        "//device/google/cuttlefish/host/frontend/webrtc:__subpackages__",
+    ],
 }
 
 cc_library_static {
@@ -186,6 +186,12 @@ cc_library_static {
         "common_audio/third_party/ooura/fft_size_128/ooura_fft.cc",
     ],
     arch: {
+        x86: {
+            srcs: [
+                "common_audio/third_party/ooura/fft_size_128/ooura_fft_sse2.cc",
+            ],
+            cflags: ["-msse2"],
+        },
         x86_64: {
             srcs: [
                 "common_audio/third_party/ooura/fft_size_128/ooura_fft_sse2.cc",
@@ -1266,18 +1272,6 @@ cc_library_static {
 }
 
 cc_library_static {
-    name: "webrtc_video_processing__video_processing_sse2",
-    defaults: ["webrtc_defaults"],
-    srcs: ["modules/video_processing/util/denoiser_filter_sse2.cc"],
-    host_supported: true,
-    cflags: ["-msse2"],
-    static_libs: [
-        "webrtc_rtc_base__rtc_base_approved",
-        "webrtc_system_wrappers__system_wrappers",
-    ],
-}
-
-cc_library_static {
     name: "webrtc_agc2__gain_applier",
     defaults: ["webrtc_defaults"],
     srcs: ["modules/audio_processing/agc2/gain_applier.cc"],
@@ -1452,22 +1446,6 @@ cc_library_static {
 }
 
 cc_library_static {
-    name: "webrtc_common_audio__common_audio_sse2",
-    defaults: ["webrtc_defaults"],
-    srcs: [
-        "common_audio/fir_filter_sse.cc",
-        "common_audio/resampler/sinc_resampler_sse.cc",
-    ],
-    host_supported: true,
-    cflags: ["-msse2"],
-    static_libs: [
-        "webrtc_rtc_base__checks",
-        "webrtc_memory__aligned_malloc",
-        "webrtc_rtc_base__rtc_base_approved",
-    ],
-}
-
-cc_library_static {
     name: "webrtc_logging__rtc_event_video",
     defaults: ["webrtc_defaults"],
     srcs: [
@@ -1510,14 +1488,8 @@ cc_library_static {
         "webrtc_rtc_base__rtc_base_approved",
         "webrtc_system_wrappers__system_wrappers",
         "webrtc_common_audio__common_audio_c",
+        "webrtc_common_audio__fir_filter_factory",
     ],
-    arch: {
-        x86_64: {
-            static_libs: [
-                "webrtc_common_audio__common_audio_sse2",
-            ],
-        },
-    },
 }
 
 cc_library_static {
@@ -1904,9 +1876,18 @@ cc_library_static {
         "webrtc_rtc_base__rtc_base_approved",
     ],
     arch: {
+        x86: {
+            cflags: ["-msse2"],
+            srcs: [
+                "common_audio/fir_filter_sse.cc",
+                "common_audio/resampler/sinc_resampler_sse.cc",
+            ],
+        },
         x86_64: {
-            static_libs: [
-                "webrtc_common_audio__common_audio_sse2",
+            cflags: ["-msse2"],
+            srcs: [
+                "common_audio/fir_filter_sse.cc",
+                "common_audio/resampler/sinc_resampler_sse.cc",
             ],
         },
     },
@@ -2979,10 +2960,13 @@ cc_library_static {
         "webrtc_common_video__common_video",
     ],
     arch: {
+        x86: {
+            cflags: ["-msse2"],
+            srcs: ["modules/video_processing/util/denoiser_filter_sse2.cc"],
+        },
         x86_64: {
-            static_libs: [
-                "webrtc_video_processing__video_processing_sse2",
-            ],
+            cflags: ["-msse2"],
+            srcs: ["modules/video_processing/util/denoiser_filter_sse2.cc"],
         },
     },
 }
@@ -5507,14 +5491,6 @@ cc_library_static {
         "rnnoise_rnn_vad",
         "usrsctplib",
     ],
-    arch: {
-        x86_64: {
-            whole_static_libs: [
-                "webrtc_video_processing__video_processing_sse2",
-                "webrtc_common_audio__common_audio_sse2",
-            ],
-        },
-    },
     srcs: [
         ":webrtc_rtp__dependency_descriptor",
         ":webrtc_audio_processing__rms_level",
@@ -5529,5 +5505,83 @@ cc_library_static {
         ":webrtc_neteq__default_neteq_controller_factory",
         ":webrtc_audio_coding__default_neteq_factory",
         ":webrtc_video_capture__video_capture_internal_impl",
+    ],
+}
+
+cc_library_static {
+    name: "webrtc_audio_processing",
+    defaults: ["webrtc_defaults"],
+    export_include_dirs: [
+        ".",
+        "modules/include",
+        "modules/audio_processing/include",
+    ],
+    whole_static_libs: [
+        "webrtc_audio_processing__audio_processing",
+        "webrtc_ooura__fft_size_256",
+        "webrtc_audio_processing__audio_processing_statistics",
+        "webrtc_rtc_base__checks",
+        "webrtc_synchronization__mutex",
+        "webrtc_audio_processing__config",
+        "webrtc_system_wrappers__field_trial",
+        "webrtc_rtc_base__rtc_base_approved",
+        "webrtc_system_wrappers__system_wrappers",
+        "webrtc_audio__aec3_config",
+        "webrtc_system_wrappers__metrics",
+        "webrtc_common_audio__common_audio_c",
+        "webrtc_aecm__aecm_core",
+        "webrtc_agc2__gain_applier",
+        "webrtc_common_audio__common_audio",
+        "webrtc_audio__audio_frame_api",
+        "webrtc_audio_processing__apm_logging",
+        "webrtc_common_audio__fir_filter_factory",
+        "webrtc_agc2__fixed_digital",
+        "webrtc_agc__legacy_agc",
+        "webrtc_utility__audio_frame_operations",
+        "webrtc_audio_processing__api",
+        "webrtc_audio_processing__audio_buffer",
+        "webrtc_vad__vad",
+        "webrtc_audio_processing__high_pass_filter",
+        "webrtc_ns__ns",
+        "webrtc_agc2__adaptive_digital",
+        "webrtc_audio_processing__audio_frame_proxies",
+        "webrtc_audio_processing__optionally_built_submodule_creators",
+        "webrtc_audio_processing__voice_detection",
+        "webrtc_aec3__aec3",
+        "webrtc_agc__agc",
+        "webrtc_aec_dump__null_aec_dump_factory",
+        "webrtc_ooura__fft_size_128",
+        "webrtc_utility__cascaded_biquad_filter",
+        "webrtc_experiments__field_trial_parser",
+        "webrtc_rtc_base__criticalsection",
+        "webrtc_rtc_base__platform_thread_types",
+        "webrtc_rtc_base__logging",
+        "webrtc_rtc_base__stringutils",
+        "webrtc_rtc_base__timeutils",
+        "webrtc_system_wrappers__cpu_features_linux",
+        "webrtc_synchronization__rw_lock_wrapper",
+        "webrtc_units__timestamp",
+        "webrtc_rtc_base__rtc_numerics",
+        "webrtc_agc__level_estimation",
+        "webrtc_agc2__level_estimation_agc",
+        "webrtc_audio_coding__isac_vad",
+        "webrtc_fft__fft",
+        "webrtc_rtc_base__platform_thread",
+        "webrtc_rtc_base__rtc_event",
+        "webrtc_agc2__common",
+        "webrtc_agc2__rnn_vad_with_level",
+        "webrtc_agc2__noise_level_estimator",
+        "webrtc_rnn_vad__rnn_vad",
+        "rnnoise_rnn_vad",
+        "webrtc_utility__pffft_wrapper",
+        "libpffft",
+        "webrtc_api__rtc_error",
+        "webrtc_memory__aligned_malloc",
+        "webrtc_agc2__biquad_filter",
+        "webrtc_utility__legacy_delay_estimator",
+        "webrtc_spl_sqrt_floor__spl_sqrt_floor",
+        "webrtc_common_audio__common_audio_cc",
+        "webrtc_transient__transient_suppressor_impl",
+        "webrtc_synchronization__yield_policy",
     ],
 }
