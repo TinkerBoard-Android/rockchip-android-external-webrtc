@@ -126,7 +126,7 @@ def GenerateDefault(targets):
         print('        "-DWEBRTC_LINUX",')
         print('    ],')
         print('    header_libs: [')
-        print('      "libabsl_headers",')
+        print('      "libwebrtc_absl_headers",')
         print('    ],')
         print('    static_libs: [')
         print('        "libaom",')
