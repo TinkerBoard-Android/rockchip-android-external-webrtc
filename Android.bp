@@ -2633,11 +2633,6 @@ cc_library_static {
     ],
 }
 
-filegroup {
-    name: "webrtc_audio_processing__aec_dump_interface",
-    srcs: ["modules/audio_processing/include/aec_dump.cc"],
-}
-
 cc_library_static {
     name: "webrtc_audio_processing__voice_detection",
     defaults: ["webrtc_defaults"],
@@ -3338,7 +3333,7 @@ cc_library_static {
     defaults: ["webrtc_defaults"],
     srcs: [
         "modules/audio_processing/aec_dump/null_aec_dump_factory.cc",
-        ":webrtc_audio_processing__aec_dump_interface",
+        "modules/audio_processing/include/aec_dump.cc",
     ],
     host_supported: true,
 }
@@ -3410,7 +3405,6 @@ cc_library_static {
         "modules/audio_processing/residual_echo_detector.cc",
         "modules/audio_processing/typing_detection.cc",
         ":webrtc_audio_processing__rms_level",
-        ":webrtc_audio_processing__aec_dump_interface",
     ],
     host_supported: true,
     cflags: ["-DWEBRTC_APM_DEBUG_DUMP=0"],
@@ -5501,7 +5495,6 @@ cc_library_static {
         ":webrtc_transport__stun_types",
         ":webrtc_neteq__neteq_api",
         ":webrtc_video__video_frame_metadata",
-        ":webrtc_audio_processing__aec_dump_interface",
         ":webrtc_neteq__default_neteq_controller_factory",
         ":webrtc_audio_coding__default_neteq_factory",
         ":webrtc_video_capture__video_capture_internal_impl",
@@ -5523,6 +5516,7 @@ cc_library_static {
         "webrtc_rtc_base__checks",
         "webrtc_synchronization__mutex",
         "webrtc_audio_processing__config",
+        "webrtc_system__file_wrapper",
         "webrtc_system_wrappers__field_trial",
         "webrtc_rtc_base__rtc_base_approved",
         "webrtc_system_wrappers__system_wrappers",
@@ -5560,6 +5554,9 @@ cc_library_static {
         "webrtc_rtc_base__timeutils",
         "webrtc_system_wrappers__cpu_features_linux",
         "webrtc_synchronization__rw_lock_wrapper",
+        "webrtc_units__data_rate",
+        "webrtc_units__data_size",
+        "webrtc_units__time_delta",
         "webrtc_units__timestamp",
         "webrtc_rtc_base__rtc_numerics",
         "webrtc_agc__level_estimation",
@@ -5582,6 +5579,7 @@ cc_library_static {
         "webrtc_spl_sqrt_floor__spl_sqrt_floor",
         "webrtc_common_audio__common_audio_cc",
         "webrtc_transient__transient_suppressor_impl",
+        "webrtc_synchronization__yield",
         "webrtc_synchronization__yield_policy",
     ],
 }
