@@ -50,6 +50,14 @@ cc_defaults {
             enabled: false,
         },
     },
+    arch: {
+        arm: {
+            cflags: ["-DWEBRTC_HAS_NEON"],
+        },
+        arm64: {
+            cflags: ["-DWEBRTC_HAS_NEON"],
+        },
+    },
     visibility: [
         "//frameworks/av/media/libeffects/preprocessing:__subpackages__",
         "//device/google/cuttlefish/host/frontend/webrtc:__subpackages__",
@@ -60,6 +68,12 @@ cc_library_static {
     name: "webrtc_spl_sqrt_floor__spl_sqrt_floor",
     defaults: ["webrtc_defaults"],
     srcs: ["common_audio/third_party/spl_sqrt_floor/spl_sqrt_floor.c"],
+    arch: {
+        arm: {
+            srcs: ["common_audio/third_party/spl_sqrt_floor/spl_sqrt_floor_arm.S"],
+            exclude_srcs: ["common_audio/third_party/spl_sqrt_floor/spl_sqrt_floor.c"],
+        },
+    },
     host_supported: true,
 }
 
@@ -197,6 +211,16 @@ cc_library_static {
                 "common_audio/third_party/ooura/fft_size_128/ooura_fft_sse2.cc",
             ],
             cflags: ["-msse2"],
+        },
+        arm: {
+            srcs: [
+                "common_audio/third_party/ooura/fft_size_128/ooura_fft_neon.cc",
+            ],
+        },
+        arm64: {
+            srcs: [
+                "common_audio/third_party/ooura/fft_size_128/ooura_fft_neon.cc",
+            ],
         },
     },
     host_supported: true,
@@ -1243,6 +1267,28 @@ cc_library_static {
         "common_audio/signal_processing/complex_bit_reverse.c",
         "common_audio/signal_processing/filter_ar_fast_q12.c",
     ],
+    arch: {
+        arm: {
+            srcs: [
+                "common_audio/signal_processing/cross_correlation_neon.c",
+                "common_audio/signal_processing/min_max_operations_neon.c",
+                "common_audio/signal_processing/downsample_fast_neon.c",
+                "common_audio/signal_processing/complex_bit_reverse_arm.S",
+                "common_audio/signal_processing/filter_ar_fast_q12_armv7.S",
+            ],
+            exclude_srcs: [
+                "common_audio/signal_processing/complex_bit_reverse.c",
+                "common_audio/signal_processing/filter_ar_fast_q12.c",
+            ],
+        },
+        arm64: {
+            srcs: [
+                "common_audio/signal_processing/cross_correlation_neon.c",
+                "common_audio/signal_processing/min_max_operations_neon.c",
+                "common_audio/signal_processing/downsample_fast_neon.c",
+            ],
+        },
+    },
     host_supported: true,
     static_libs: [
         "webrtc_spl_sqrt_floor__spl_sqrt_floor",
@@ -1262,6 +1308,15 @@ cc_library_static {
         "modules/audio_processing/aecm/echo_control_mobile.cc",
         "modules/audio_processing/aecm/aecm_core_c.cc",
     ],
+    arch: {
+        arm: {
+            srcs: ["modules/audio_processing/aecm/aecm_core_neon.cc"],
+        },
+        arm64: {
+            srcs: ["modules/audio_processing/aecm/aecm_core_neon.cc"],
+        },
+    },
+
     host_supported: true,
     static_libs: [
         "webrtc_rtc_base__checks",
@@ -1888,6 +1943,18 @@ cc_library_static {
             srcs: [
                 "common_audio/fir_filter_sse.cc",
                 "common_audio/resampler/sinc_resampler_sse.cc",
+            ],
+        },
+        arm: {
+            srcs: [
+                "common_audio/fir_filter_neon.cc",
+                "common_audio/resampler/sinc_resampler_neon.cc",
+            ],
+        },
+        arm64: {
+            srcs: [
+                "common_audio/fir_filter_neon.cc",
+                "common_audio/resampler/sinc_resampler_neon.cc",
             ],
         },
     },
@@ -2962,6 +3029,12 @@ cc_library_static {
         x86_64: {
             cflags: ["-msse2"],
             srcs: ["modules/video_processing/util/denoiser_filter_sse2.cc"],
+        },
+        arm: {
+            srcs: ["modules/video_processing/util/denoiser_filter_neon.cc"],
+        },
+        arm64: {
+            srcs: ["modules/video_processing/util/denoiser_filter_neon.cc"],
         },
     },
 }
